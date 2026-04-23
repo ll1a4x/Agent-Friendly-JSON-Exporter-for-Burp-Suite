@@ -185,4 +185,4 @@ For histories larger than ~10,000 items, consider exporting in batches by date r
 
 ## License
 
-Released under the MIT License. Use for authorized security testing only.
+This project is licensed under the Apache License 2.0. See LICENSE for details.
