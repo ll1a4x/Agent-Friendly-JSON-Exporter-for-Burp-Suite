@@ -4,6 +4,7 @@ from javax.swing import JMenuItem, JFileChooser
 from java.util import ArrayList
 from datetime import datetime
 import json
+import os
 import re
 
 class BurpExtender(IBurpExtender, IContextMenuFactory):
@@ -19,8 +20,12 @@ class BurpExtender(IBurpExtender, IContextMenuFactory):
             actionPerformed=lambda e: self.export(invocation, mode='full')))
         menu.add(JMenuItem("Export as JSONL (index)",
             actionPerformed=lambda e: self.export(invocation, mode='index')))
+        menu.add(JMenuItem("Export as raw requests (ffuf)",
+            actionPerformed=lambda e: self.export(invocation, mode='raw')))
         menu.add(JMenuItem("Export both (index + full)",
             actionPerformed=lambda e: self.export(invocation, mode='both')))
+        menu.add(JMenuItem("Export all (index + full + raw)",
+            actionPerformed=lambda e: self.export(invocation, mode='all')))
         return menu
 
     def parse_headers(self, header_list):
@@ -127,9 +132,53 @@ class BurpExtender(IBurpExtender, IContextMenuFactory):
             'ctype': entry['response']['body_type'] if entry['response'] else None,
         }
 
+    def export_raw_requests(self, messages, out_dir):
+        """Export raw HTTP requests as individual files for ffuf --request."""
+        raw_dir = out_dir + '/raw_requests'
+        if not os.path.exists(raw_dir):
+            os.makedirs(raw_dir)
+
+        msg_list = list(messages)
+        count = len(msg_list)
+        id_width = max(len(str(count)), 3)
+        manifest_lines = []
+
+        for i, msg in enumerate(msg_list):
+            item_id = i + 1
+            req_bytes = msg.getRequest()
+            raw_text = self._helpers.bytesToString(req_bytes)
+
+            filename = 'req_%s.txt' % str(item_id).zfill(id_width)
+            filepath = raw_dir + '/' + filename
+            with open(filepath, 'wb') as f:
+                f.write(raw_text.encode('iso-8859-1'))
+
+            req_info = self._helpers.analyzeRequest(msg)
+            url = str(req_info.getUrl())
+            manifest_lines.append(json.dumps({
+                'id': item_id,
+                'file': filename,
+                'method': req_info.getMethod(),
+                'url': url,
+                'host': req_info.getUrl().getHost(),
+                'path': req_info.getUrl().getPath(),
+            }))
+
+        manifest_path = raw_dir + '/_manifest.jsonl'
+        with open(manifest_path, 'w') as f:
+            for line in manifest_lines:
+                f.write(line + '\n')
+
+        print("Wrote %d raw request files to %s" % (count, raw_dir))
+
     def export(self, invocation, mode='full'):
         messages = invocation.getSelectedMessages()
-        entries = [self.build_entry(m, i + 1) for i, m in enumerate(messages)]
+        if messages is None:
+            return
+
+        need_entries = mode in ('full', 'index', 'both', 'all')
+        if need_entries:
+            entries = [self.build_entry(m, i + 1) for i, m in enumerate(messages)]
 
         chooser = JFileChooser()
         chooser.setDialogTitle("Choose export directory")
@@ -139,7 +188,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory):
 
         out_dir = chooser.getSelectedFile().getAbsolutePath()
 
-        if mode in ('full', 'both'):
+        if mode in ('full', 'both', 'all'):
             full_path = out_dir + '/proxy_full.json'
             payload = {
                 'metadata': {
@@ -152,9 +201,12 @@ class BurpExtender(IBurpExtender, IContextMenuFactory):
                 json.dump(payload, f, indent=2)
             print("Wrote %d items to %s" % (len(entries), full_path))
 
-        if mode in ('index', 'both'):
+        if mode in ('index', 'both', 'all'):
             index_path = out_dir + '/proxy_index.jsonl'
             with open(index_path, 'w') as f:
                 for entry in entries:
                     f.write(json.dumps(self.build_index_entry(entry)) + '\n')
             print("Wrote index to %s" % index_path)
+
+        if mode in ('raw', 'all'):
+            self.export_raw_requests(messages, out_dir)
